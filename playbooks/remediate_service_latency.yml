@@ -20,6 +20,11 @@
       ansible.builtin.debug:
         msg: "Service {{ service_name }} is {{ service_state.status.ActiveState }}, restarting to clear latency"
 
+    - name: Clear simulated latency flag
+      ansible.builtin.file:
+        path: /tmp/simulate-latency
+        state: absent
+
     - name: Restart service to clear thread pool exhaustion
       ansible.builtin.systemd:
         name: "{{ service_name }}"
