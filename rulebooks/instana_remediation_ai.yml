@@ -15,8 +15,8 @@
         event.payload.issue is defined and
         event.payload.issue.state == "OPEN"
       action:
-        run_job_template:
-          name: "Instana - AI Route Remediation"
+        run_workflow_template:
+          name: "Instana - AI Remediation Workflow"
           organization: "Default"
           job_args:
             extra_vars:
