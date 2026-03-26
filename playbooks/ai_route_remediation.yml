@@ -1,7 +1,8 @@
 ---
 # Workflow Node 1: AI-assisted alert routing
-# Receives Instana alert context, calls LLM to select the best remediation
-# template, and passes the decision to the next workflow node via set_stats.
+# Receives Instana alert context, fetches the full job template catalog from AAP,
+# calls LLM to select the best remediation template, and passes the decision to
+# the next workflow node via set_stats.
 #
 # This playbook does NOT launch remediation directly. The workflow handles:
 #   Node 1: This playbook (AI routing decision)
@@ -27,49 +28,9 @@
     llm_api_key: ""
     llm_model: "claude-sonnet-4-5"
 
-    # Available remediation templates - the LLM chooses from this catalog
-    remediation_catalog:
-      - name: "Instana - Service Latency Remediation"
-        description: >-
-          Restarts a systemd-managed application service to clear thread pool
-          exhaustion or memory leaks causing high response times. Verifies
-          health check post-restart and posts annotation to Instana.
-        indicators:
-          - high latency
-          - slow response time
-          - thread pool exhaustion
-          - service degradation
-
-      - name: "Instana - Database Performance Remediation"
-        description: >-
-          Kills idle database connections exceeding threshold, clears query
-          cache, and recycles connection pool. For MySQL and PostgreSQL.
-        indicators:
-          - slow queries
-          - connection pool exhaustion
-          - database performance degradation
-          - high db response time
-
-      - name: "Instana - Deployment Rollback"
-        description: >-
-          Rolls back the most recent Kubernetes or application deployment
-          when error rate spikes correlate with a recent change event.
-          High impact - requires approval in production.
-        indicators:
-          - error rate spike
-          - erroneous calls
-          - deployment failure
-          - recent change correlation
-
-      - name: "ESCALATE"
-        description: >-
-          No suitable automated remediation found. Escalate to on-call
-          engineer via notification. Use when the alert does not match
-          any known remediation pattern or when confidence is low.
-        indicators:
-          - unknown failure mode
-          - novel alert pattern
-          - multiple possible causes
+    # AAP controller connection (pass via extra_vars)
+    controller_host: ""
+    controller_token: ""
 
   tasks:
     - name: Validate alert input
@@ -78,11 +39,30 @@
           - alert_text | length > 0
         fail_msg: "No alert_text provided. This playbook must be called with Instana alert context."
 
+    - name: Fetch job template catalog from AAP
+      ansible.builtin.uri:
+        url: "https://{{ controller_host }}/api/controller/v2/job_templates/?page_size=100"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ controller_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        status_code: 200
+      register: jt_response
+
+    - name: Build template catalog for LLM
+      ansible.builtin.set_fact:
+        template_catalog: >-
+          {% for jt in jt_response.json.results %}
+          {{ loop.index }}. {{ jt.name }}
+             Description: {{ jt.description | default('No description provided') }}
+          {% endfor %}
+
     - name: Build LLM prompt
       ansible.builtin.set_fact:
         llm_prompt: |
           You are an AIOps routing agent. An observability alert has fired and you must
-          select the single best remediation action from the catalog below.
+          select the single best remediation action from the job template catalog below.
 
           ALERT CONTEXT:
           - Text: {{ alert_text }}
@@ -94,16 +74,12 @@
           - Instana Suggestion: {{ alert_suggestion }}
           {% endif %}
 
-          REMEDIATION CATALOG:
-          {% for template in remediation_catalog %}
-          {{ loop.index }}. {{ template.name }}
-             Description: {{ template.description }}
-             Indicators: {{ template.indicators | join(', ') }}
-          {% endfor %}
+          JOB TEMPLATE CATALOG (from Ansible Automation Platform):
+          {{ template_catalog }}
 
           INSTRUCTIONS:
-          - Select exactly ONE template from the catalog
-          - If confidence is below 70% or the alert does not clearly match any template, select ESCALATE
+          - Select exactly ONE job template from the catalog that best remediates this alert
+          - If confidence is below 70% or the alert does not clearly match any template, set template to "ESCALATE"
           - Respond with ONLY a JSON object in this exact format, no other text:
           {"template": "<exact template name>", "confidence": <0-100>, "reasoning": "<one sentence>"}
 
