@@ -48,12 +48,17 @@
           - "Health check: {{ health_check.status }}"
           - "Post-restart response time: {{ post_restart_check.elapsed }}s"
 
-    - name: Restart load generator
-      ansible.builtin.shell: |
-        pkill -f load-gen.sh || true
-        nohup /home/ec2-user/load-gen.sh &> /tmp/load-gen.log &
+    - name: Stop existing load generator
+      ansible.builtin.command: pkill -f load-gen.sh
       become: false
+      failed_when: false
       changed_when: true
+
+    - name: Start load generator
+      ansible.builtin.shell: nohup /home/ec2-user/load-gen.sh &> /tmp/load-gen.log &
+      become: false
+      async: 10
+      poll: 0
 
     - name: Post remediation annotation to Instana via Host Agent REST API
       ansible.builtin.uri:
