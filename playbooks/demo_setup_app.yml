@@ -1,0 +1,129 @@
+---
+- name: Install demo app and Instana agent on RHEL host
+  hosts: demo_hosts
+  become: true
+  gather_facts: true
+
+  vars:
+    instana_agent_key: ""
+    instana_download_key: ""
+    instana_endpoint: ""
+
+  tasks:
+    - name: Validate Instana variables
+      ansible.builtin.assert:
+        that:
+          - instana_agent_key | length > 0
+          - instana_download_key | length > 0
+          - instana_endpoint | length > 0
+        fail_msg: >
+          Pass Instana credentials via extra vars:
+          -e instana_agent_key=KEY -e instana_download_key=KEY -e instana_endpoint=HOST:PORT
+
+    # --- Demo Application ---
+
+    - name: Install Python and pip
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+        state: present
+
+    - name: Install Flask and Instana SDK
+      ansible.builtin.pip:
+        name:
+          - flask
+          - instana
+        extra_args: --user
+      become: false
+
+    - name: Deploy demo app source
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/demo-app.py"
+        dest: /home/ec2-user/demo-app.py
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+
+    - name: Deploy systemd service unit
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/demo-app.service"
+        dest: /etc/systemd/system/demo-app.service
+        mode: "0644"
+      notify: Restart demo app
+
+    - name: Enable and start demo app
+      ansible.builtin.systemd:
+        name: demo-app
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for demo app health check
+      ansible.builtin.uri:
+        url: "http://localhost:{{ service_port }}/health"
+        status_code: 200
+      retries: 10
+      delay: 3
+      register: health
+      until: health.status == 200
+
+    # --- Instana Agent ---
+
+    - name: Download Instana agent installer
+      ansible.builtin.get_url:
+        url: https://setup.instana.io/agent
+        dest: /tmp/setup_instana_agent.sh
+        mode: "0700"
+
+    - name: Install Instana agent
+      ansible.builtin.command:
+        cmd: >
+          /tmp/setup_instana_agent.sh
+          -a {{ instana_agent_key }}
+          -d {{ instana_download_key }}
+          -t dynamic
+          -e {{ instana_endpoint }}
+          -s -y
+      args:
+        creates: /opt/instana/agent/bin/karaf
+
+    - name: Ensure Instana agent is running
+      ansible.builtin.systemd:
+        name: instana-agent
+        state: started
+        enabled: true
+
+    # --- Load Generator ---
+
+    - name: Deploy load generator script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/load-gen.sh"
+        dest: /home/ec2-user/load-gen.sh
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+
+    - name: Start load generator in background
+      ansible.builtin.shell: |
+        pkill -f load-gen.sh || true
+        nohup /home/ec2-user/load-gen.sh &> /tmp/load-gen.log &
+      become: false
+      changed_when: true
+
+    - name: Display setup summary
+      ansible.builtin.debug:
+        msg:
+          - "Demo app: http://{{ ansible_host }}:{{ service_port }}/health"
+          - "Instana agent installed and running"
+          - "Load generator started"
+          - ""
+          - "Wait 5-10 min for Instana to discover the host and service."
+          - "Then check Instana UI > Applications > Services for demo-app.py"
+
+  handlers:
+    - name: Restart demo app
+      ansible.builtin.systemd:
+        name: demo-app
+        state: restarted
+        daemon_reload: true

@@ -1,0 +1,125 @@
+---
+- name: Provision AWS infrastructure for Instana AIOps demo
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_region: "{{ lookup('env', 'AWS_REGION') | default('us-east-1', true) }}"
+    aws_key_name: "{{ lookup('env', 'AWS_KEY_NAME') }}"
+    owner_tag: "{{ lookup('env', 'OWNER_TAG') | default('instana-demo', true) }}"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - aws_key_name | length > 0
+        fail_msg: "Set AWS_KEY_NAME environment variable or pass -e aws_key_name=..."
+
+    - name: Create VPC
+      amazon.aws.ec2_vpc_net:
+        name: instana-demo
+        cidr_block: "{{ aws_vpc_cidr | default('10.99.0.0/16') }}"
+        region: "{{ aws_region }}"
+        dns_hostnames: true
+        dns_support: true
+        tags:
+          owner: "{{ owner_tag }}"
+      register: vpc
+
+    - name: Create internet gateway
+      amazon.aws.ec2_vpc_igw:
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ aws_region }}"
+        tags:
+          Name: instana-demo
+          owner: "{{ owner_tag }}"
+      register: igw
+
+    - name: Create public subnet
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc.id }}"
+        cidr: "{{ aws_subnet_cidr | default('10.99.1.0/24') }}"
+        az: "{{ aws_region }}a"
+        region: "{{ aws_region }}"
+        map_public: true
+        tags:
+          Name: instana-demo
+          owner: "{{ owner_tag }}"
+      register: subnet
+
+    - name: Create route table with internet route
+      amazon.aws.ec2_vpc_route_table:
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ aws_region }}"
+        subnets:
+          - "{{ subnet.subnet.id }}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ igw.gateway_id }}"
+        tags:
+          Name: instana-demo
+          owner: "{{ owner_tag }}"
+
+    - name: Create security group
+      amazon.aws.ec2_security_group:
+        name: instana-demo
+        description: Instana AIOps demo - SSH and app port
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ aws_region }}"
+        rules:
+          - proto: tcp
+            ports: [22]
+            cidr_ip: 0.0.0.0/0
+            rule_desc: SSH
+          - proto: tcp
+            ports: [8080]
+            cidr_ip: 0.0.0.0/0
+            rule_desc: Demo app
+        tags:
+          owner: "{{ owner_tag }}"
+      register: sg
+
+    - name: Find latest RHEL 9 AMI
+      amazon.aws.ec2_ami_info:
+        owners: ["309956199498"]
+        filters:
+          name: "RHEL-9*x86_64*"
+          state: available
+        region: "{{ aws_region }}"
+      register: ami_info
+
+    - name: Set AMI ID to latest
+      ansible.builtin.set_fact:
+        ami_id: "{{ (ami_info.images | sort(attribute='creation_date') | last).image_id }}"
+
+    - name: Launch RHEL 9 instance
+      amazon.aws.ec2_instance:
+        name: instana-demo-rhel
+        image_id: "{{ ami_id }}"
+        instance_type: "{{ aws_instance_type | default('t3.medium') }}"
+        key_name: "{{ aws_key_name }}"
+        vpc_subnet_id: "{{ subnet.subnet.id }}"
+        security_group: "{{ sg.group_id }}"
+        network:
+          assign_public_ip: true
+        tags:
+          owner: "{{ owner_tag }}"
+          purpose: instana-aap-demo
+        wait: true
+        region: "{{ aws_region }}"
+      register: ec2
+
+    - name: Display instance details
+      ansible.builtin.debug:
+        msg:
+          - "Instance ID: {{ ec2.instances[0].instance_id }}"
+          - "Public IP: {{ ec2.instances[0].public_ip_address }}"
+          - "VPC ID: {{ vpc.vpc.id }}"
+          - "Subnet ID: {{ subnet.subnet.id }}"
+          - "Security Group ID: {{ sg.group_id }}"
+          - ""
+          - "SSH: ssh -i <your-key.pem> ec2-user@{{ ec2.instances[0].public_ip_address }}"
+          - ""
+          - "Next: Run demo_setup_app.yml with:"
+          - "  -e demo_public_ip={{ ec2.instances[0].public_ip_address }}"

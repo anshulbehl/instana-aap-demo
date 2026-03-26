@@ -1,0 +1,12 @@
+---
+all:
+  children:
+    demo_hosts:
+      hosts:
+        instana-demo-rhel:
+          ansible_host: "{{ demo_public_ip }}"
+          ansible_user: ec2-user
+          ansible_ssh_private_key_file: "{{ demo_ssh_key_path }}"
+          ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+          service_name: demo-app
+          service_port: 8080

@@ -1,0 +1,61 @@
+---
+- name: Instana Incident Remediation
+  hosts: all
+  sources:
+    - ibm.instana.instana_webhook:
+        host: 0.0.0.0
+        port: 5000
+
+  rules:
+    - name: Service Latency - restart affected service
+      condition: >
+        event.payload.issue.severity == 10 and
+        event.payload.issue.text is match(".*Slow.*|.*latency.*|.*response time.*", ignorecase=true) and
+        event.payload.issue.state == "OPEN"
+      action:
+        run_job_template:
+          name: "Instana - Service Latency Remediation"
+          organization: "Default"
+          job_args:
+            extra_vars:
+              target_host: "{{ event.payload.issue.fqdn }}"
+              entity_label: "{{ event.payload.issue.entityLabel }}"
+              instana_link: "{{ event.payload.issue.link }}"
+              instana_suggestion: "{{ event.payload.issue.suggestion }}"
+
+    - name: Database Performance - clear cache and recycle connections
+      condition: >
+        event.payload.issue.severity >= 5 and
+        event.payload.issue.entity is match(".*sql.*|.*db.*|.*database.*|.*mysql.*|.*postgres.*", ignorecase=true) and
+        event.payload.issue.state == "OPEN"
+      action:
+        run_job_template:
+          name: "Instana - Database Performance Remediation"
+          organization: "Default"
+          job_args:
+            extra_vars:
+              target_host: "{{ event.payload.issue.fqdn }}"
+              entity_label: "{{ event.payload.issue.entityLabel }}"
+
+    - name: Deployment Error Spike - trigger rollback
+      condition: >
+        event.payload.issue.severity == 10 and
+        event.payload.issue.text is match(".*error rate.*|.*erroneous call.*", ignorecase=true) and
+        event.payload.issue.state == "OPEN"
+      action:
+        run_job_template:
+          name: "Instana - Deployment Rollback"
+          organization: "Default"
+          job_args:
+            extra_vars:
+              target_host: "{{ event.payload.issue.fqdn }}"
+              entity_label: "{{ event.payload.issue.entityLabel }}"
+              instana_link: "{{ event.payload.issue.link }}"
+
+    - name: Log all unmatched events for debugging
+      condition: event.payload.issue is defined
+      action:
+        debug:
+          msg: >
+            Unmatched Instana event: {{ event.payload.issue.text }}
+            (severity={{ event.payload.issue.severity }})

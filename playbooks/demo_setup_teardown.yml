@@ -1,0 +1,96 @@
+---
+- name: Tear down all Instana AIOps demo AWS resources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_region: "{{ lookup('env', 'AWS_REGION') | default('us-east-1', true) }}"
+
+  tasks:
+    - name: Find demo instances
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:Name": instana-demo-rhel
+        region: "{{ aws_region }}"
+      register: instances
+
+    - name: Terminate demo instances
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ instances.instances | map(attribute='instance_id') | list }}"
+        state: absent
+        wait: true
+        region: "{{ aws_region }}"
+      when: instances.instances | length > 0
+
+    - name: Find demo VPC
+      amazon.aws.ec2_vpc_net_info:
+        filters:
+          "tag:Name": instana-demo
+        region: "{{ aws_region }}"
+      register: vpcs
+
+    - name: Remove demo resources when VPC exists
+      when: vpcs.vpcs | length > 0
+      block:
+        - name: Set VPC ID
+          ansible.builtin.set_fact:
+            vpc_id: "{{ vpcs.vpcs[0].id }}"
+
+        - name: Delete security group
+          amazon.aws.ec2_security_group:
+            name: instana-demo
+            vpc_id: "{{ vpc_id }}"
+            region: "{{ aws_region }}"
+            state: absent
+          ignore_errors: true
+
+        - name: Find subnets in VPC
+          amazon.aws.ec2_vpc_subnet_info:
+            filters:
+              vpc-id: "{{ vpc_id }}"
+            region: "{{ aws_region }}"
+          register: subnets
+
+        - name: Delete subnets
+          amazon.aws.ec2_vpc_subnet:
+            vpc_id: "{{ vpc_id }}"
+            cidr: "{{ item.cidr_block }}"
+            region: "{{ aws_region }}"
+            state: absent
+          loop: "{{ subnets.subnets }}"
+          ignore_errors: true
+
+        - name: Find route tables in VPC
+          amazon.aws.ec2_vpc_route_table_info:
+            filters:
+              vpc-id: "{{ vpc_id }}"
+              association.main: "false"
+            region: "{{ aws_region }}"
+          register: route_tables
+
+        - name: Delete non-main route tables
+          amazon.aws.ec2_vpc_route_table:
+            route_table_id: "{{ item.id }}"
+            vpc_id: "{{ vpc_id }}"
+            region: "{{ aws_region }}"
+            state: absent
+          loop: "{{ route_tables.route_tables }}"
+          ignore_errors: true
+
+        - name: Delete internet gateway
+          amazon.aws.ec2_vpc_igw:
+            vpc_id: "{{ vpc_id }}"
+            region: "{{ aws_region }}"
+            state: absent
+          ignore_errors: true
+
+        - name: Delete VPC
+          amazon.aws.ec2_vpc_net:
+            vpc_id: "{{ vpc_id }}"
+            region: "{{ aws_region }}"
+            state: absent
+
+    - name: Display teardown complete
+      ansible.builtin.debug:
+        msg: "All instana-demo resources deleted in {{ aws_region }}"

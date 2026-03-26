@@ -1,0 +1,86 @@
+---
+# Workflow Node 3: Execute the AI-selected remediation template
+# Reads the routing decision from workflow artifacts (set_stats from Node 1)
+# and launches the corresponding job template via AAP API.
+#
+# This runs AFTER the approval node, so a human has confirmed the AI choice.
+- name: Dispatch AI-selected remediation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # These come from set_stats in ai_route_remediation.yml
+    selected_template: ""
+    routing_confidence: ""
+    routing_reasoning: ""
+    alert_fqdn: ""
+    alert_entity_label: ""
+    alert_link: ""
+    alert_text: ""
+
+    # AAP controller connection
+    controller_host: "{{ lookup('env', 'CONTROLLER_HOST') }}"
+    controller_token: "{{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}"
+
+  tasks:
+    - name: Validate routing decision exists
+      ansible.builtin.assert:
+        that:
+          - selected_template | length > 0
+          - selected_template != "ESCALATE"
+        fail_msg: "No valid template selected. Cannot dispatch remediation."
+
+    - name: Display approved remediation
+      ansible.builtin.debug:
+        msg:
+          - "Approved remediation: {{ selected_template }}"
+          - "Confidence: {{ routing_confidence }}%"
+          - "Reasoning: {{ routing_reasoning }}"
+          - "Target: {{ alert_fqdn }}"
+
+    - name: Find job template by name in AAP
+      ansible.builtin.uri:
+        url: "https://{{ controller_host }}/api/v2/job_templates/?name={{ selected_template | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ controller_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        status_code: 200
+      register: template_lookup
+
+    - name: Fail if template not found
+      ansible.builtin.assert:
+        that:
+          - template_lookup.json.count > 0
+        fail_msg: >-
+          Template '{{ selected_template }}' not found in AAP.
+          Ensure the job template exists before running this workflow.
+
+    - name: Launch remediation job template
+      ansible.builtin.uri:
+        url: "https://{{ controller_host }}/api/v2/job_templates/{{ template_lookup.json.results[0].id }}/launch/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ controller_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          extra_vars:
+            target_host: "{{ alert_fqdn }}"
+            entity_label: "{{ alert_entity_label }}"
+            instana_link: "{{ alert_link }}"
+            routed_by: "ai"
+            routing_confidence: "{{ routing_confidence }}"
+        validate_certs: false
+        status_code: [200, 201]
+      register: launched_job
+
+    - name: Display result
+      ansible.builtin.debug:
+        msg:
+          - "Remediation launched successfully"
+          - "Job ID: {{ launched_job.json.id }}"
+          - "Template: {{ selected_template }}"
+          - "Alert: {{ alert_text }}"

@@ -1,0 +1,71 @@
+---
+- name: Remediate service latency spike
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    service_name: demo-app
+    service_port: 8080
+    health_check_path: /health
+    instana_agent_api_url: "http://localhost:42699"
+
+  tasks:
+    - name: Gather service state before restart
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+      register: service_state
+
+    - name: Log pre-restart state
+      ansible.builtin.debug:
+        msg: "Service {{ service_name }} is {{ service_state.status.ActiveState }}, restarting to clear latency"
+
+    - name: Restart service to clear thread pool exhaustion
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
+      when: service_state.status.ActiveState == "active"
+
+    - name: Wait for service health check to pass
+      ansible.builtin.uri:
+        url: "http://localhost:{{ service_port }}{{ health_check_path }}"
+        status_code: 200
+      retries: 10
+      delay: 6
+      register: health_check
+      until: health_check.status == 200
+
+    - name: Verify latency is back to normal
+      ansible.builtin.uri:
+        url: "http://localhost:{{ service_port }}/api/checkout"
+        status_code: 200
+      register: post_restart_check
+
+    - name: Display remediation result
+      ansible.builtin.debug:
+        msg:
+          - "Service {{ service_name }} restarted successfully"
+          - "Health check: {{ health_check.status }}"
+          - "Post-restart response time: {{ post_restart_check.elapsed }}s"
+
+    - name: Restart load generator
+      ansible.builtin.shell: |
+        pkill -f load-gen.sh || true
+        nohup /home/ec2-user/load-gen.sh &> /tmp/load-gen.log &
+      become: false
+      changed_when: true
+
+    - name: Post remediation annotation to Instana via Host Agent REST API
+      ansible.builtin.uri:
+        url: "{{ instana_agent_api_url }}/com.instana.plugin.generic.event"
+        method: POST
+        body_format: json
+        body:
+          title: "AAP Remediation: {{ service_name }} restarted"
+          text: >-
+            Service {{ service_name }} restarted by AAP job {{ tower_job_id | default('manual') }}
+            due to latency spike. Health check passed in {{ post_restart_check.elapsed }}s.
+          severity: -1
+          duration: 30000
+        status_code: [200, 201]
+      ignore_errors: true

@@ -1,0 +1,29 @@
+---
+# AI-assisted routing rulebook
+# Instead of hard-coded pattern matching, this sends ALL alerts
+# to an AI router that selects the best remediation template.
+- name: Instana AI-Assisted Remediation
+  hosts: all
+  sources:
+    - ibm.instana.instana_webhook:
+        host: 0.0.0.0
+        port: 5000
+
+  rules:
+    - name: Route all incidents through AI
+      condition: >
+        event.payload.issue is defined and
+        event.payload.issue.state == "OPEN"
+      action:
+        run_job_template:
+          name: "Instana - AI Route Remediation"
+          organization: "Default"
+          job_args:
+            extra_vars:
+              alert_text: "{{ event.payload.issue.text }}"
+              alert_severity: "{{ event.payload.issue.severity }}"
+              alert_entity: "{{ event.payload.issue.entity }}"
+              alert_fqdn: "{{ event.payload.issue.fqdn }}"
+              alert_entity_label: "{{ event.payload.issue.entityLabel }}"
+              alert_link: "{{ event.payload.issue.link }}"
+              alert_suggestion: "{{ event.payload.issue.suggestion | default('') }}"

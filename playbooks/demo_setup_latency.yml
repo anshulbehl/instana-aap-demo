@@ -1,0 +1,39 @@
+---
+- name: Inject or clear simulated latency on demo app
+  hosts: demo_hosts
+  become: false
+  gather_facts: false
+
+  vars:
+    latency_state: "check"
+
+  tasks:
+    - name: Inject latency
+      ansible.builtin.file:
+        path: /tmp/simulate-latency
+        state: touch
+        mode: "0644"
+      when: latency_state == "on"
+
+    - name: Clear latency
+      ansible.builtin.file:
+        path: /tmp/simulate-latency
+        state: absent
+      when: latency_state == "off"
+
+    - name: Check latency flag status
+      ansible.builtin.stat:
+        path: /tmp/simulate-latency
+      register: flag
+
+    - name: Check current response time
+      ansible.builtin.uri:
+        url: "http://localhost:{{ service_port | default(8080) }}/api/checkout"
+        status_code: 200
+      register: response
+
+    - name: Display status
+      ansible.builtin.debug:
+        msg:
+          - "Latency flag: {{ 'ON' if flag.stat.exists else 'OFF' }}"
+          - "Response time: {{ response.elapsed }}s"

@@ -1,0 +1,158 @@
+---
+# Workflow Node 1: AI-assisted alert routing
+# Receives Instana alert context, calls LLM to select the best remediation
+# template, and passes the decision to the next workflow node via set_stats.
+#
+# This playbook does NOT launch remediation directly. The workflow handles:
+#   Node 1: This playbook (AI routing decision)
+#   Node 2: Approval node (human reviews the AI choice)
+#   Node 3: dispatch_remediation.yml (executes the selected template)
+- name: AI-assisted alert routing
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Instana alert payload (passed from EDA as extra_vars)
+    alert_text: ""
+    alert_severity: ""
+    alert_entity: ""
+    alert_fqdn: ""
+    alert_entity_label: ""
+    alert_link: ""
+    alert_suggestion: ""
+
+    # LLM configuration
+    llm_api_url: "{{ lookup('env', 'LLM_API_URL') }}"
+    llm_api_key: "{{ lookup('env', 'LLM_API_KEY') }}"
+    llm_model: "{{ lookup('env', 'LLM_MODEL') | default('ibm/granite-3-8b-instruct', true) }}"
+
+    # Available remediation templates - the LLM chooses from this catalog
+    remediation_catalog:
+      - name: "Instana - Service Latency Remediation"
+        description: >-
+          Restarts a systemd-managed application service to clear thread pool
+          exhaustion or memory leaks causing high response times. Verifies
+          health check post-restart and posts annotation to Instana.
+        indicators:
+          - high latency
+          - slow response time
+          - thread pool exhaustion
+          - service degradation
+
+      - name: "Instana - Database Performance Remediation"
+        description: >-
+          Kills idle database connections exceeding threshold, clears query
+          cache, and recycles connection pool. For MySQL and PostgreSQL.
+        indicators:
+          - slow queries
+          - connection pool exhaustion
+          - database performance degradation
+          - high db response time
+
+      - name: "Instana - Deployment Rollback"
+        description: >-
+          Rolls back the most recent Kubernetes or application deployment
+          when error rate spikes correlate with a recent change event.
+          High impact - requires approval in production.
+        indicators:
+          - error rate spike
+          - erroneous calls
+          - deployment failure
+          - recent change correlation
+
+      - name: "ESCALATE"
+        description: >-
+          No suitable automated remediation found. Escalate to on-call
+          engineer via notification. Use when the alert does not match
+          any known remediation pattern or when confidence is low.
+        indicators:
+          - unknown failure mode
+          - novel alert pattern
+          - multiple possible causes
+
+  tasks:
+    - name: Validate alert input
+      ansible.builtin.assert:
+        that:
+          - alert_text | length > 0
+        fail_msg: "No alert_text provided. This playbook must be called with Instana alert context."
+
+    - name: Build LLM prompt
+      ansible.builtin.set_fact:
+        llm_prompt: |
+          You are an AIOps routing agent. An observability alert has fired and you must
+          select the single best remediation action from the catalog below.
+
+          ALERT CONTEXT:
+          - Text: {{ alert_text }}
+          - Severity: {{ alert_severity }}
+          - Entity: {{ alert_entity }}
+          - Entity Label: {{ alert_entity_label }}
+          - FQDN: {{ alert_fqdn }}
+          {% if alert_suggestion | length > 0 %}
+          - Instana Suggestion: {{ alert_suggestion }}
+          {% endif %}
+
+          REMEDIATION CATALOG:
+          {% for template in remediation_catalog %}
+          {{ loop.index }}. {{ template.name }}
+             Description: {{ template.description }}
+             Indicators: {{ template.indicators | join(', ') }}
+          {% endfor %}
+
+          INSTRUCTIONS:
+          - Select exactly ONE template from the catalog
+          - If confidence is below 70% or the alert does not clearly match any template, select ESCALATE
+          - Respond with ONLY a JSON object in this exact format, no other text:
+          {"template": "<exact template name>", "confidence": <0-100>, "reasoning": "<one sentence>"}
+
+    - name: Call LLM for routing decision
+      ansible.builtin.uri:
+        url: "{{ llm_api_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ llm_api_key }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          model: "{{ llm_model }}"
+          messages:
+            - role: user
+              content: "{{ llm_prompt }}"
+          temperature: 0.1
+          max_tokens: 200
+        status_code: 200
+      register: llm_response
+
+    - name: Parse LLM response
+      ansible.builtin.set_fact:
+        routing_decision: "{{ llm_response.json.choices[0].message.content | from_json }}"
+
+    - name: Display routing decision
+      ansible.builtin.debug:
+        msg:
+          - "AI selected: {{ routing_decision.template }}"
+          - "Confidence: {{ routing_decision.confidence }}%"
+          - "Reasoning: {{ routing_decision.reasoning }}"
+
+    - name: Pass routing decision to workflow via set_stats
+      ansible.builtin.set_stats:
+        data:
+          selected_template: "{{ routing_decision.template }}"
+          routing_confidence: "{{ routing_decision.confidence }}"
+          routing_reasoning: "{{ routing_decision.reasoning }}"
+          alert_text: "{{ alert_text }}"
+          alert_severity: "{{ alert_severity }}"
+          alert_entity: "{{ alert_entity }}"
+          alert_fqdn: "{{ alert_fqdn }}"
+          alert_entity_label: "{{ alert_entity_label }}"
+          alert_link: "{{ alert_link }}"
+
+    - name: Fail the node if AI says ESCALATE
+      ansible.builtin.fail:
+        msg: >-
+          AI router selected ESCALATE (confidence: {{ routing_decision.confidence }}%).
+          Alert '{{ alert_text }}' does not match any known remediation.
+          Sending to on-call team for manual investigation.
+      when: routing_decision.template == "ESCALATE"
