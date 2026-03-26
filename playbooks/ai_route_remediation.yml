@@ -125,13 +125,9 @@
         status_code: 200
       register: llm_response
 
-    - name: Extract JSON from LLM response
-      ansible.builtin.set_fact:
-        llm_raw: "{{ llm_response.json.choices[0].message.content | regex_replace('(?s)```(?:json)?\\s*', '') | regex_replace('(?s)```\\s*$', '') | trim }}"
-
     - name: Parse LLM response
       ansible.builtin.set_fact:
-        routing_decision: "{{ llm_raw | from_json }}"
+        routing_decision: "{{ llm_response.json.choices[0].message.content | regex_replace('(?s)```(?:json)?\\s*', '') | regex_replace('(?s)```\\s*$', '') | trim }}"
 
     - name: Display routing decision
       ansible.builtin.debug:
