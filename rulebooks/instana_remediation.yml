@@ -2,7 +2,7 @@
 - name: Instana Incident Remediation
   hosts: all
   sources:
-    - ibm.instana.instana_webhook:
+    - ansible.eda.webhook:
         host: 0.0.0.0
         port: 5000
 
