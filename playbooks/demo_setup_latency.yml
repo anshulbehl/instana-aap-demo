@@ -1,6 +1,6 @@
 ---
 - name: Inject or clear simulated latency on demo app
-  hosts: demo_hosts
+  hosts: all
   become: false
   gather_facts: false
 
