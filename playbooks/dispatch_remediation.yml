@@ -19,9 +19,9 @@
     alert_link: ""
     alert_text: ""
 
-    # AAP controller connection
-    controller_host: "{{ lookup('env', 'CONTROLLER_HOST') }}"
-    controller_token: "{{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}"
+    # AAP controller connection (pass via extra_vars or credential injection)
+    controller_host: ""
+    controller_token: ""
 
   tasks:
     - name: Validate routing decision exists
@@ -41,7 +41,7 @@
 
     - name: Find job template by name in AAP
       ansible.builtin.uri:
-        url: "https://{{ controller_host }}/api/v2/job_templates/?name={{ selected_template | urlencode }}"
+        url: "https://{{ controller_host }}/api/controller/v2/job_templates/?name={{ selected_template | urlencode }}"
         method: GET
         headers:
           Authorization: "Bearer {{ controller_token }}"
@@ -60,7 +60,7 @@
 
     - name: Launch remediation job template
       ansible.builtin.uri:
-        url: "https://{{ controller_host }}/api/v2/job_templates/{{ template_lookup.json.results[0].id }}/launch/"
+        url: "https://{{ controller_host }}/api/controller/v2/job_templates/{{ template_lookup.json.results[0].id }}/launch/"
         method: POST
         headers:
           Authorization: "Bearer {{ controller_token }}"
