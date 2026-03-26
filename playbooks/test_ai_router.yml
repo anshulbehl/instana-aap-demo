@@ -18,7 +18,7 @@
     # LLM configuration
     llm_api_url: "{{ lookup('env', 'LLM_API_URL') }}"
     llm_api_key: "{{ lookup('env', 'LLM_API_KEY') }}"
-    llm_model: "{{ lookup('env', 'LLM_MODEL') | default('ibm/granite-3-8b-instruct', true) }}"
+    llm_model: "{{ lookup('env', 'LLM_MODEL') | default('claude-sonnet-4-5', true) }}"
 
     # Simulated alert scenarios
     scenarios:
@@ -159,9 +159,13 @@
         status_code: 200
       register: llm_response
 
+    - name: Extract JSON from LLM response
+      ansible.builtin.set_fact:
+        llm_raw: "{{ llm_response.json.choices[0].message.content | regex_replace('(?s)```(?:json)?\\s*', '') | regex_replace('(?s)```\\s*$', '') | trim }}"
+
     - name: Parse LLM response
       ansible.builtin.set_fact:
-        routing_decision: "{{ llm_response.json.choices[0].message.content | from_json }}"
+        routing_decision: "{{ llm_raw | from_json }}"
 
     - name: Display AI routing result
       ansible.builtin.debug:
