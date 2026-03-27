@@ -77,5 +77,5 @@
             due to latency spike. Health check passed in {{ post_restart_check.elapsed }}s.
           severity: -1
           duration: 30000
-        status_code: [200, 201]
+        status_code: [200, 201, 204]
       ignore_errors: true

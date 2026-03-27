@@ -32,6 +32,10 @@
     controller_host: ""
     controller_token: ""
 
+    # Mattermost notification (pass via extra_vars)
+    mattermost_instance: ""
+    mattermost_token: ""
+
   tasks:
     - name: Validate alert input
       ansible.builtin.assert:
@@ -111,6 +115,37 @@
           - "AI selected: {{ routing_decision.template }}"
           - "Confidence: {{ routing_decision.confidence }}%"
           - "Reasoning: {{ routing_decision.reasoning }}"
+
+    - name: Notify Mattermost with AI routing decision
+      community.general.mattermost:
+        url: "{{ mattermost_instance }}"
+        api_key: "{{ mattermost_token }}"
+        attachments:
+          - text: "AIOps Remediation - Approval Required"
+            color: "{{ '#ff6600' if routing_decision.confidence | int < 80 else '#00cc44' }}"
+            title: "Instana Alert: {{ alert_text }}"
+            fields:
+              - title: Alert Details
+                value: |
+                  Entity: {{ alert_entity_label }}
+                  Severity: {{ alert_severity }}
+                  FQDN: {{ alert_fqdn }}
+                  Suggestion: {{ alert_suggestion | default('N/A') }}
+                short: false
+              - title: AI Routing Decision
+                value: |
+                  Selected Template: {{ routing_decision.template }}
+                  Confidence: {{ routing_decision.confidence }}%
+                  Reasoning: {{ routing_decision.reasoning }}
+                short: false
+              - title: Action Required
+                value: "Approve or deny this remediation in [AAP Workflow Approvals](https://{{ controller_host }}/#/workflow_approvals)"
+                short: false
+              - title: Instana Link
+                value: "{{ alert_link }}"
+                short: false
+      delegate_to: localhost
+      when: mattermost_instance | default('') | trim != ''
 
     - name: Pass routing decision to workflow via set_stats
       ansible.builtin.set_stats:
